@@ -132,7 +132,6 @@ func runPublisher(client *kubemq.Client, channel string, startwg, donewg *sync.W
 	}
 	if pattern == "es" {
 		for i := 0; i < numMsgs; i++ {
-			//	err := sendSingleEvent(client, body, channel, strconv.Itoa(i))
 			err := sendSingleEventStore(client, body, channel, strconv.Itoa(i), clientName)
 			if err != nil {
 				fmt.Printf("%v", err)
@@ -185,7 +184,7 @@ func innerSubscribeToEvents(channel, group string, errCh chan error, subClient *
 
 func innerSubscribeToEventsStore(channel, group string, errCh chan error, subClient *kubemq.Client) (<-chan *kubemq.EventStoreReceive, error) {
 
-	return subClient.SubscribeToEventsStore(context.Background(), channel, group, errCh, kubemq.StartFromNewEvents())
+	return subClient.SubscribeToEventsStore(context.Background(), channel, group, errCh, kubemq.StartFromFirstEvent())
 
 }
 
@@ -197,12 +196,15 @@ func runSubscriber(client *kubemq.Client, channelName string, group string, star
 	mmperc := numMsgs / 10
 
 	if pattern == "e" {
-		eventCh, _ := innerSubscribeToEvents(channelName, group, errCH, client)
+		eventCh, err := innerSubscribeToEvents(channelName, group, errCH, client)
+		if err != nil {
+			fmt.Printf("Error innerSubscribeToEvents , %v", err)
+		}
 		go func() {
 			for {
 				select {
 				case err := <-errCH:
-					fmt.Printf("Errir lastMessages %d, %v", received, err)
+					fmt.Printf("Error lastMessages %d, %v", received, err)
 				case <-eventCh:
 					received++
 					if received%mmperc == 0 {
@@ -216,6 +218,7 @@ func runSubscriber(client *kubemq.Client, channelName string, group string, star
 					}
 					if received >= numMsgs {
 						ch <- time.Now()
+
 					}
 				}
 			}
@@ -223,7 +226,11 @@ func runSubscriber(client *kubemq.Client, channelName string, group string, star
 	}
 
 	if pattern == "es" {
-		eventSCh, _ := innerSubscribeToEventsStore(channelName, group, errCH, client)
+		eventSCh, err := innerSubscribeToEventsStore(channelName, group, errCH, client)
+
+		if err != nil {
+			fmt.Printf("Error innerSubscribeToEventsStore , %v", err)
+		}
 		go func() {
 			for {
 				select {
@@ -252,6 +259,7 @@ func runSubscriber(client *kubemq.Client, channelName string, group string, star
 	startwg.Done()
 	start := <-ch
 	end := <-ch
+	//fmt.Printf("done!!!!!!!!!!!!!!")
 	benchmark.AddSubSample(bench.NewSample(numMsgs, msgSize, start, end))
 	donewg.Done()
 
