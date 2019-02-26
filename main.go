@@ -124,14 +124,19 @@ func runPublisher(client *kubemq.Client, channel string, startwg, donewg *sync.W
 
 	if pattern == "e" {
 		for i := 0; i < numMsgs; i++ {
-			//	err := sendSingleEvent(client, body, channel, strconv.Itoa(i))
-			sendSingleEvent(client, body, channel, strconv.Itoa(i), pattern)
+			err := sendSingleEvent(client, body, channel, strconv.Itoa(i))
+			if err != nil {
+				fmt.Printf("%v", err)
+			}
 		}
 	}
 	if pattern == "es" {
 		for i := 0; i < numMsgs; i++ {
 			//	err := sendSingleEvent(client, body, channel, strconv.Itoa(i))
-			sendSingleEventStore(client, body, channel, strconv.Itoa(i), pattern, clientName)
+			err := sendSingleEventStore(client, body, channel, strconv.Itoa(i), clientName)
+			if err != nil {
+				fmt.Printf("%v", err)
+			}
 		}
 	}
 
@@ -149,7 +154,7 @@ func randomString(len int) string {
 }
 
 //sending a single event to the kubeMQ
-func sendSingleEvent(client *kubemq.Client, message string, channelName string, metaData string, pattern string) error {
+func sendSingleEvent(client *kubemq.Client, message string, channelName string, metaData string) error {
 
 	e := client.E().
 		SetId("event").
@@ -161,7 +166,7 @@ func sendSingleEvent(client *kubemq.Client, message string, channelName string, 
 
 }
 
-func sendSingleEventStore(client *kubemq.Client, message string, channelName string, metaData string, pattern string, clientName string) error {
+func sendSingleEventStore(client *kubemq.Client, message string, channelName string, metaData string, clientName string) error {
 
 	_, err := client.ES().
 		SetId(clientName).
@@ -196,8 +201,8 @@ func runSubscriber(client *kubemq.Client, channelName string, group string, star
 		go func() {
 			for {
 				select {
-				//case err := <-errCH:
-
+				case err := <-errCH:
+					fmt.Printf("Errir lastMessages %d, %v", received, err)
 				case <-eventCh:
 					received++
 					if received%mmperc == 0 {
@@ -222,7 +227,8 @@ func runSubscriber(client *kubemq.Client, channelName string, group string, star
 		go func() {
 			for {
 				select {
-
+				case err := <-errCH:
+					fmt.Printf("Errir lastMessages %d, %v", received, err)
 				case <-eventSCh:
 					received++
 					if received%mmperc == 0 {

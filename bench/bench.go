@@ -161,7 +161,7 @@ func (s *Sample) Rate() int64 {
 func (s *Sample) String() string {
 	rate := commaFormat(s.Rate())
 	throughput := HumanBytes(s.Throughput(), false)
-	return fmt.Sprintf("%s msgs/sec ~ %s/sec", rate, throughput)
+	return fmt.Sprintf("%s msgs/sec ~ %s/sec duaration %v sec", rate, throughput, s.Duration().Seconds())
 }
 
 // Duration that the sample was active
