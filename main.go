@@ -26,7 +26,7 @@ import (
 	"sync"
 	"time"
 
-	"bitbucket.org/tradency_team/KubeVSnast/bench"
+	"bitbucket.org/tradency_team/KubeVSnast/KubeMQvsnats/bench"
 	kubemq "github.com/kubemq-io/kubemq-go"
 )
 
@@ -35,10 +35,11 @@ const (
 	DefaultNumMsgs     = 100000
 	DefaultNumPubs     = 1
 	DefaultNumSubs     = 1
-	DefaultMessageSize = 16
-	DefaultChannelName = "newchannel"
+	DefaultMessageSize = 128
+	DefaultChannelName = "newChannel"
 	DefaultKubeAddres  = "localhost:50000"
-	DefaultClientName  = "NeClient"
+	DefaultClientName  = "newClient"
+	DefaulType         = "es"
 )
 
 var benchmark *bench.Benchmark
@@ -50,8 +51,9 @@ func main() {
 	var numMsgs = flag.Int("n", DefaultNumMsgs, "Number of Messages to Publish")
 	var msgSize = flag.Int("ms", DefaultMessageSize, "Size of the message.")
 	var csvFile = flag.String("csv", "", "Save bench data to csv file.")
-	var channelName = flag.String("ch", DefaultChannelName, "pubsub channel name")
-	var clientName = flag.String("client", DefaultClientName, "client name")
+	var channelName = flag.String("ch", DefaultChannelName+strconv.FormatInt(time.Now().Unix(), 10), "pubsub channel name")
+	var clientName = flag.String("client", DefaultClientName+strconv.FormatInt(time.Now().Unix(), 10), "client name")
+	var testpattern = flag.String("type", DefaulType, "e = pubsub, es = pubsub presistnace")
 
 	log.SetFlags(0)
 	flag.Parse()
@@ -81,7 +83,7 @@ func main() {
 	}
 	for i := 0; i < *numSubs; i++ {
 
-		go runSubscriber(client, *channelName, "", &startwg, &donewg, *numMsgs, *msgSize)
+		go runSubscriber(client, *channelName, "", &startwg, &donewg, *numMsgs, *msgSize, *testpattern)
 	}
 	startwg.Wait()
 
@@ -90,16 +92,17 @@ func main() {
 	pubCounts := bench.MsgsPerClient(*numMsgs, *numPubs)
 	for i := 0; i < *numPubs; i++ {
 
-		go runPublisher(client, *channelName, &startwg, &donewg, pubCounts[i], *msgSize)
+		go runPublisher(client, *channelName, &startwg, &donewg, pubCounts[i], *msgSize, *testpattern, *channelName)
 	}
 
-	log.Printf("Starting benchmark [msgs=%d, msgsize=%d, pubs=%d, subs=%d]\n", *numMsgs, *msgSize, *numPubs, *numSubs)
+	log.Printf("Starting benchmark [msgs=%d, msgsize=%d, pubs=%d, subs=%d testpattern=%s channel=%s client=%s]\n", *numMsgs, *msgSize, *numPubs, *numSubs, *testpattern, *channelName, *clientName)
 
 	startwg.Wait()
 	donewg.Wait()
 
 	benchmark.Close()
 
+	fmt.Printf("\n")
 	fmt.Print(benchmark.Report())
 
 	if len(*csvFile) > 0 {
@@ -109,7 +112,7 @@ func main() {
 	}
 }
 
-func runPublisher(client *kubemq.Client, channel string, startwg, donewg *sync.WaitGroup, numMsgs int, msgSize int) {
+func runPublisher(client *kubemq.Client, channel string, startwg, donewg *sync.WaitGroup, numMsgs int, msgSize int, pattern string, clientName string) {
 	startwg.Done()
 
 	var body string
@@ -119,9 +122,17 @@ func runPublisher(client *kubemq.Client, channel string, startwg, donewg *sync.W
 
 	start := time.Now()
 
-	for i := 0; i < numMsgs; i++ {
-		//	err := sendSingleEvent(client, body, channel, strconv.Itoa(i))
-		sendSingleEvent(client, body, channel, strconv.Itoa(i))
+	if pattern == "e" {
+		for i := 0; i < numMsgs; i++ {
+			//	err := sendSingleEvent(client, body, channel, strconv.Itoa(i))
+			sendSingleEvent(client, body, channel, strconv.Itoa(i), pattern)
+		}
+	}
+	if pattern == "es" {
+		for i := 0; i < numMsgs; i++ {
+			//	err := sendSingleEvent(client, body, channel, strconv.Itoa(i))
+			sendSingleEventStore(client, body, channel, strconv.Itoa(i), pattern, clientName)
+		}
 	}
 
 	benchmark.AddPubSample(bench.NewSample(numMsgs, msgSize, start, time.Now()))
@@ -138,9 +149,22 @@ func randomString(len int) string {
 }
 
 //sending a single event to the kubeMQ
-func sendSingleEvent(client *kubemq.Client, message string, channelName string, metaData string) error {
-	err := client.E().
+func sendSingleEvent(client *kubemq.Client, message string, channelName string, metaData string, pattern string) error {
+
+	e := client.E().
 		SetId("event").
+		SetChannel(channelName).
+		SetMetadata(metaData).
+		SetBody([]byte(message))
+
+	return e.Send(context.Background())
+
+}
+
+func sendSingleEventStore(client *kubemq.Client, message string, channelName string, metaData string, pattern string, clientName string) error {
+
+	_, err := client.ES().
+		SetId(clientName).
 		SetChannel(channelName).
 		SetMetadata(metaData).
 		SetBody([]byte(message)).
@@ -149,35 +173,76 @@ func sendSingleEvent(client *kubemq.Client, message string, channelName string, 
 }
 
 func innerSubscribeToEvents(channel, group string, errCh chan error, subClient *kubemq.Client) (<-chan *kubemq.Event, error) {
+
 	return subClient.SubscribeToEvents(context.Background(), channel, group, errCh)
+
 }
 
-func runSubscriber(client *kubemq.Client, channelName string, group string, startwg, donewg *sync.WaitGroup, numMsgs int, msgSize int) {
+func innerSubscribeToEventsStore(channel, group string, errCh chan error, subClient *kubemq.Client) (<-chan *kubemq.EventStoreReceive, error) {
+
+	return subClient.SubscribeToEventsStore(context.Background(), channel, group, errCh, kubemq.StartFromNewEvents())
+
+}
+
+func runSubscriber(client *kubemq.Client, channelName string, group string, startwg, donewg *sync.WaitGroup, numMsgs int, msgSize int, pattern string) {
 
 	received := 0
 	errCH := make(chan error)
 	ch := make(chan time.Time, 2)
-	eventCh, _ := innerSubscribeToEvents(channelName, group, errCH, client)
-	go func() {
-		for {
-			select {
-			//case err := <-errCH:
+	mmperc := numMsgs / 10
 
-			case <-eventCh:
-				received++
-				if received > numMsgs-10 {
-					println(received)
-				}
-				if received == 1 {
-					ch <- time.Now()
-				}
-				if received >= numMsgs {
-					ch <- time.Now()
-				}
+	if pattern == "e" {
+		eventCh, _ := innerSubscribeToEvents(channelName, group, errCH, client)
+		go func() {
+			for {
+				select {
+				//case err := <-errCH:
 
+				case <-eventCh:
+					received++
+					if received%mmperc == 0 {
+						fmt.Printf("perc %d\r", received/mmperc*10)
+					}
+					if received > numMsgs-5 {
+						fmt.Printf("lastMessages %d\r", received)
+					}
+					if received == 1 {
+						ch <- time.Now()
+					}
+					if received >= numMsgs {
+						ch <- time.Now()
+					}
+				}
 			}
-		}
-	}()
+		}()
+	}
+
+	if pattern == "es" {
+		eventSCh, _ := innerSubscribeToEventsStore(channelName, group, errCH, client)
+		go func() {
+			for {
+				select {
+
+				case <-eventSCh:
+					received++
+					if received%mmperc == 0 {
+						fmt.Printf("perc %d\r", received/mmperc*10)
+					}
+					if received > numMsgs-5 {
+						fmt.Printf("lastMessages %d\r", received)
+					}
+					if received == 1 {
+						ch <- time.Now()
+					}
+					if received >= numMsgs {
+						ch <- time.Now()
+					}
+
+				}
+			}
+		}()
+	}
+
 	startwg.Done()
 	start := <-ch
 	end := <-ch
