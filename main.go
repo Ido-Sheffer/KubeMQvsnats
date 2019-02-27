@@ -39,7 +39,7 @@ const (
 	DefaultChannelName = "newChannel"
 	DefaultKubeAddres  = "localhost:50000"
 	DefaultClientName  = "newClient"
-	DefaulType         = "es"
+	DefaulType         = "e"
 )
 
 var benchmark *bench.Benchmark
@@ -198,8 +198,6 @@ func runPublisher(client *kubemq.Client, channel string, startwg, donewg *sync.W
 				case eventStreamCh <- eventStore:
 				case err := <-errStreamCh:
 					fmt.Printf("Error innerSubscribeToEvents , %v", err)
-					//	case ret := <-eventStoreResmCh:
-					//	fmt.Printf("return innerSubscribeToEvents , %v", ret)
 
 				}
 			}
@@ -212,37 +210,61 @@ func runPublisher(client *kubemq.Client, channel string, startwg, donewg *sync.W
 	donewg.Done()
 }
 
+// type counter struct {
+// 	value int64
+// }
+
+// func (c *counter) add(v int) {
+// 	if v < 0 {
+// 		panic(errors.New("counter cannot decrease in value"))
+// 	}
+// 	atomic.AddInt64(&c.value, int64(v))
+// }
+
+// func (c *counter) Write(perc int, numMsgs int, ch chan time.Time) {
+// 	v := atomic.LoadInt64(&c.value)
+// 	if v >= int64(numMsgs) || v == 1 {
+// 		ch <- time.Now()
+// 	}
+// 	if v%int64(perc) == 0 {
+// 		fmt.Printf("perc %d\r", v/int64(perc)*10)
+// 	}
+// 	if v > int64(numMsgs)-5 {
+// 		fmt.Printf("lastMessages %d\r", v)
+// 	}
+// }
+
 func runSubscriber(client *kubemq.Client, channelName string, group string, startwg, donewg *sync.WaitGroup, numMsgs int, msgSize int, pattern string) {
 
-	received := 0
+	counter := 0
 	errCh := make(chan error)
-	//ch := make(chan time.Time, 2)
+	ch := make(chan time.Time, 2)
 	mmperc := numMsgs / 10
-	var finish sync.WaitGroup
-	finish.Add(1)
-	start := time.Now()
+
 	//events and event stream
 	if pattern == "e" || pattern == "est" {
 		eventCh, err := client.SubscribeToEvents(context.Background(), channelName, group, errCh)
-
 		if err != nil {
 			fmt.Printf("Error innerSubscribeToEvents , %v", err)
 		}
+
 		go func() {
 			for {
 				select {
 				case err := <-errCh:
-					fmt.Printf("Error lastMessages %d, %v", received, err)
+					fmt.Printf("Error lastMessages  %v", err)
 				case <-eventCh:
-					received++
-					if received == numMsgs {
-						finish.Done()
+					if counter == 0 || counter == numMsgs-1 {
+						ch <- time.Now()
 					}
-					go logAndChanel(received, mmperc, numMsgs)
-					// if logAndChanel(received, mmperc, numMsgs) {
-					// 	ch <- time.Now()
-					// }
+					counter++
+					if (counter % mmperc) == 0 {
+						fmt.Printf("perc %d\r", counter/mmperc*10)
 
+					}
+					if counter > numMsgs-10 {
+						fmt.Printf("lastMessages %d\r", counter)
+					}
 				}
 			}
 		}()
@@ -259,15 +281,18 @@ func runSubscriber(client *kubemq.Client, channelName string, group string, star
 			for {
 				select {
 				case err := <-errCh:
-					fmt.Printf("Errir lastMessages %d, %v", received, err)
+					fmt.Printf("Error lastMessages  %v", err)
 				case <-eventSCh:
-					received++
-
-					if logAndChanel(received, mmperc, numMsgs) {
-						//ch <- time.Now()
+					if counter == 0 || counter == numMsgs-1 {
+						ch <- time.Now()
 					}
-					if received == numMsgs {
-						finish.Done()
+					counter++
+					if (counter % mmperc) == 0 {
+						fmt.Printf("perc %d\r", counter/mmperc*10)
+
+					}
+					if counter > numMsgs-10 {
+						fmt.Printf("lastMessages %d\r", counter)
 					}
 				}
 			}
@@ -275,10 +300,9 @@ func runSubscriber(client *kubemq.Client, channelName string, group string, star
 	}
 
 	startwg.Done()
-	finish.Wait()
 
-	//start := <-ch
-	end := time.Now()
+	start := <-ch
+	end := <-ch
 	benchmark.AddSubSample(bench.NewSample(numMsgs, msgSize, start, end))
 	donewg.Done()
 
