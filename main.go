@@ -36,7 +36,7 @@ const (
 	DefaultNumPubs     = 1
 	DefaultNumSubs     = 1
 	DefaultMessageSize = 128
-	DefaultChannelName = "newChannel"
+	DefaultChannelName = "ido"
 	DefaultKubeAddres  = "localhost:50000"
 	DefaultClientName  = "newClient"
 	DefaulType         = "e"
@@ -51,7 +51,7 @@ func main() {
 	var numMsgs = flag.Int("n", DefaultNumMsgs, "Number of Messages to Publish")
 	var msgSize = flag.Int("ms", DefaultMessageSize, "Size of the message.")
 	var csvFile = flag.String("csv", "", "Save bench data to csv file.")
-	var channelName = flag.String("ch", DefaultChannelName+strconv.FormatInt(time.Now().Unix(), 10), "pubsub channel name")
+	var channelName = flag.String("ch", DefaultChannelName, "pubsub channel name")
 	var clientName = flag.String("client", DefaultClientName+strconv.FormatInt(time.Now().Unix(), 10), "client name")
 	var testpattern = flag.String("type", DefaulType, "e = pubsub, es = pubsub presistnace")
 
@@ -76,11 +76,16 @@ func main() {
 		log.Printf(err.Error())
 		return
 	}
-	client, err := createKubmeMQClient(address, port, *clientName)
+
+	client, err := kubemq.NewClient(context.Background(),
+		kubemq.WithAddress(address, port),
+		kubemq.WithClientId(*clientName),
+		kubemq.WithTransportType(kubemq.TransportTypeGRPC))
 	if err != nil {
 		log.Printf(err.Error())
 		return
 	}
+
 	for i := 0; i < *numSubs; i++ {
 		go runSubscriber(client, *channelName, "", &startwg, &donewg, *numMsgs, *msgSize, *testpattern)
 	}
@@ -91,13 +96,16 @@ func main() {
 	pubCounts := bench.MsgsPerClient(*numMsgs, *numPubs)
 	for i := 0; i < *numPubs; i++ {
 
-		go runPublisher(client, *channelName, &startwg, &donewg, pubCounts[i], *msgSize, *testpattern, *channelName)
+		go runPublisher(client, *channelName, &startwg, &donewg, pubCounts[i], *msgSize, *testpattern, *clientName)
 	}
 
 	log.Printf("Starting benchmark [msgs=%d, msgsize=%d, pubs=%d, subs=%d testpattern=%s channel=%s client=%s]\n", *numMsgs, *msgSize, *numPubs, *numSubs, *testpattern, *channelName, *clientName)
 
 	startwg.Wait()
 	donewg.Wait()
+	if *numSubs == 0 {
+		time.Sleep(60 * time.Second)
+	}
 
 	benchmark.Close()
 
@@ -112,19 +120,22 @@ func main() {
 }
 
 func runPublisher(client *kubemq.Client, channel string, startwg, donewg *sync.WaitGroup, numMsgs int, msgSize int, pattern string, clientName string) {
-	startwg.Done()
 
+	startwg.Done()
 	var body string
 	if msgSize > 0 {
 		body = randomString(msgSize)
 	}
 
+	var goSend sync.WaitGroup
+	goSend.Add(numMsgs)
 	start := time.Now()
 	//Event KubeMQ inmemory
 	if pattern == "e" {
 		for i := 0; i < numMsgs; i++ {
 
 			go func(i int) {
+				defer goSend.Done()
 				err := client.E().
 					SetId(clientName).
 					SetChannel(channel).
@@ -140,11 +151,12 @@ func runPublisher(client *kubemq.Client, channel string, startwg, donewg *sync.W
 	//EventStore KubeMQ persistence
 	if pattern == "es" {
 		for i := 0; i < numMsgs; i++ {
-			go func(r int) {
+			go func(i int) {
+				defer goSend.Done()
 				_, err := client.ES().
 					SetId(clientName).
 					SetChannel(channel).
-					SetMetadata(strconv.Itoa(r)).
+					SetMetadata(strconv.Itoa(i)).
 					SetBody([]byte(body)).
 					Send(context.Background())
 				if err != nil {
@@ -172,16 +184,17 @@ func runPublisher(client *kubemq.Client, channel string, startwg, donewg *sync.W
 			for r := 0; r < numMsgs; r++ {
 				select {
 				case eventStreamCh <- event:
-
+					goSend.Done()
 				}
 			}
 		}()
+
 	}
 
 	//EventStoreStream KubeMQ persistence
 	if pattern == "esst" {
-		eventStreamCh := make(chan *kubemq.EventStore, 1)
-		eventStoreResmCh := make(chan *kubemq.EventStoreResult, 1)
+		eventStreamCh := make(chan *kubemq.EventStore)
+		eventStoreResmCh := make(chan *kubemq.EventStoreResult)
 		errStreamCh := make(chan error, 1)
 
 		go client.StreamEventsStore(context.Background(), eventStreamCh, eventStoreResmCh, errStreamCh)
@@ -194,20 +207,27 @@ func runPublisher(client *kubemq.Client, channel string, startwg, donewg *sync.W
 
 		go func() {
 			for r := 0; r < numMsgs; r++ {
+
 				select {
+
 				case eventStreamCh <- eventStore:
+					goSend.Done()
 				case err := <-errStreamCh:
 					fmt.Printf("Error innerSubscribeToEvents , %v", err)
 
 				}
+
 			}
 		}()
 
 	}
+	go func() {
+		goSend.Wait()
+		fmt.Printf("\n!!!!!!!!!!FinishWait!!!!!!!!!!!\n")
+		benchmark.AddPubSample(bench.NewSample(numMsgs, msgSize, start, time.Now()))
 
-	benchmark.AddPubSample(bench.NewSample(numMsgs, msgSize, start, time.Now()))
-
-	donewg.Done()
+		donewg.Done()
+	}()
 }
 
 // type counter struct {
@@ -254,6 +274,7 @@ func runSubscriber(client *kubemq.Client, channelName string, group string, star
 				case err := <-errCh:
 					fmt.Printf("Error lastMessages  %v", err)
 				case <-eventCh:
+
 					if counter == 0 || counter == numMsgs-1 {
 						ch <- time.Now()
 					}
@@ -265,6 +286,7 @@ func runSubscriber(client *kubemq.Client, channelName string, group string, star
 					if counter > numMsgs-10 {
 						fmt.Printf("lastMessages %d\r", counter)
 					}
+
 				}
 			}
 		}()
@@ -283,10 +305,13 @@ func runSubscriber(client *kubemq.Client, channelName string, group string, star
 				case err := <-errCh:
 					fmt.Printf("Error lastMessages  %v", err)
 				case <-eventSCh:
+
 					if counter == 0 || counter == numMsgs-1 {
 						ch <- time.Now()
 					}
+
 					counter++
+
 					if (counter % mmperc) == 0 {
 						fmt.Printf("perc %d\r", counter/mmperc*10)
 
@@ -294,16 +319,18 @@ func runSubscriber(client *kubemq.Client, channelName string, group string, star
 					if counter > numMsgs-10 {
 						fmt.Printf("lastMessages %d\r", counter)
 					}
+
 				}
 			}
 		}()
 	}
 
 	startwg.Done()
-
 	start := <-ch
 	end := <-ch
+
 	benchmark.AddSubSample(bench.NewSample(numMsgs, msgSize, start, end))
+
 	donewg.Done()
 
 }
@@ -329,27 +356,4 @@ func randomString(len int) string {
 		bytes[i] = byte(65 + rand.Intn(25)) //A=65 and Z = 65+25
 	}
 	return string(bytes)
-}
-
-func createKubmeMQClient(serverAdd string, serverPort int, name string) (*kubemq.Client, error) {
-
-	client, err := kubemq.NewClient(context.Background(),
-		kubemq.WithAddress(serverAdd, serverPort),
-		kubemq.WithClientId(name),
-		kubemq.WithTransportType(kubemq.TransportTypeGRPC))
-	return client, err
-}
-func logAndChanel(counter int, perc int, numMsgs int) bool {
-	if counter%perc == 0 {
-		fmt.Printf("perc %d\r", counter/perc*10)
-	}
-	if counter > numMsgs-5 {
-		fmt.Printf("lastMessages %d\r", counter)
-	}
-	if counter == 1 || counter >= numMsgs {
-		return true
-	}
-
-	return false
-
 }
