@@ -32,7 +32,7 @@ import (
 
 // Some sane defaults
 const (
-	DefaultNumMsgs     = 100000
+	DefaultNumMsgs     = 100
 	DefaultNumPubs     = 1
 	DefaultNumSubs     = 1
 	DefaultMessageSize = 128
@@ -71,18 +71,17 @@ func main() {
 
 	// Run Subscribers first
 	startwg.Add(*numSubs)
-	address, port, err := getPort(*kubeaAddress)
+	address, port, err := splitServerCred(*kubeaAddress)
 	if err != nil {
 		log.Printf(err.Error())
 		return
 	}
-	client, err := getClient(address, port, *clientName)
+	client, err := createKubmeMQClient(address, port, *clientName)
 	if err != nil {
 		log.Printf(err.Error())
 		return
 	}
 	for i := 0; i < *numSubs; i++ {
-
 		go runSubscriber(client, *channelName, "", &startwg, &donewg, *numMsgs, *msgSize, *testpattern)
 	}
 	startwg.Wait()
@@ -121,22 +120,91 @@ func runPublisher(client *kubemq.Client, channel string, startwg, donewg *sync.W
 	}
 
 	start := time.Now()
-
+	//Event KubeMQ inmemory
 	if pattern == "e" {
 		for i := 0; i < numMsgs; i++ {
-			err := sendSingleEvent(client, body, channel, strconv.Itoa(i))
-			if err != nil {
-				fmt.Printf("%v", err)
-			}
+
+			go func(i int) {
+				err := client.E().
+					SetId(clientName).
+					SetChannel(channel).
+					SetMetadata(strconv.Itoa(i)).
+					SetBody([]byte(body)).Send(context.Background())
+				if err != nil {
+					fmt.Printf("Error innerSubscribeToEvents , %v", err)
+				}
+
+			}(i)
 		}
 	}
+	//EventStore KubeMQ persistence
 	if pattern == "es" {
 		for i := 0; i < numMsgs; i++ {
-			err := sendSingleEventStore(client, body, channel, strconv.Itoa(i), clientName)
-			if err != nil {
-				fmt.Printf("%v", err)
-			}
+			go func(r int) {
+				_, err := client.ES().
+					SetId(clientName).
+					SetChannel(channel).
+					SetMetadata(strconv.Itoa(r)).
+					SetBody([]byte(body)).
+					Send(context.Background())
+				if err != nil {
+					fmt.Printf("Error innerSubscribeToEvents , %v", err)
+				}
+
+			}(i)
+
 		}
+	}
+
+	//EventStoreStream KubeMQ inmemory stream
+	if pattern == "est" {
+		eventStreamCh := make(chan *kubemq.Event, 1)
+		errStreamCh := make(chan error, 1)
+
+		go client.StreamEvents(context.Background(), eventStreamCh, errStreamCh)
+
+		event := client.E().SetId(clientName).
+			SetChannel(channel).
+			SetMetadata("some-metadata").
+			SetBody([]byte(body))
+
+		go func() {
+			for r := 0; r < numMsgs; r++ {
+				select {
+				case eventStreamCh <- event:
+
+				}
+			}
+		}()
+	}
+
+	//EventStoreStream KubeMQ persistence
+	if pattern == "esst" {
+		eventStreamCh := make(chan *kubemq.EventStore, 1)
+		eventStoreResmCh := make(chan *kubemq.EventStoreResult, 1)
+		errStreamCh := make(chan error, 1)
+
+		go client.StreamEventsStore(context.Background(), eventStreamCh, eventStoreResmCh, errStreamCh)
+
+		eventStore := client.ES().
+			SetId(clientName).
+			SetChannel(channel).
+			SetMetadata("some-metadata").
+			SetBody([]byte(body))
+
+		go func() {
+			for r := 0; r < numMsgs; r++ {
+				select {
+				case eventStreamCh <- eventStore:
+				case err := <-errStreamCh:
+					fmt.Printf("Error innerSubscribeToEvents , %v", err)
+					//	case ret := <-eventStoreResmCh:
+					//	fmt.Printf("return innerSubscribeToEvents , %v", ret)
+
+				}
+			}
+		}()
+
 	}
 
 	benchmark.AddPubSample(bench.NewSample(numMsgs, msgSize, start, time.Now()))
@@ -144,89 +212,45 @@ func runPublisher(client *kubemq.Client, channel string, startwg, donewg *sync.W
 	donewg.Done()
 }
 
-func randomString(len int) string {
-	bytes := make([]byte, len)
-	for i := 0; i < len; i++ {
-		bytes[i] = byte(65 + rand.Intn(25)) //A=65 and Z = 65+25
-	}
-	return string(bytes)
-}
-
-//sending a single event to the kubeMQ
-func sendSingleEvent(client *kubemq.Client, message string, channelName string, metaData string) error {
-
-	e := client.E().
-		SetId("event").
-		SetChannel(channelName).
-		SetMetadata(metaData).
-		SetBody([]byte(message))
-
-	return e.Send(context.Background())
-
-}
-
-func sendSingleEventStore(client *kubemq.Client, message string, channelName string, metaData string, clientName string) error {
-
-	_, err := client.ES().
-		SetId(clientName).
-		SetChannel(channelName).
-		SetMetadata(metaData).
-		SetBody([]byte(message)).
-		Send(context.Background())
-	return err
-}
-
-func innerSubscribeToEvents(channel, group string, errCh chan error, subClient *kubemq.Client) (<-chan *kubemq.Event, error) {
-
-	return subClient.SubscribeToEvents(context.Background(), channel, group, errCh)
-
-}
-
-func innerSubscribeToEventsStore(channel, group string, errCh chan error, subClient *kubemq.Client) (<-chan *kubemq.EventStoreReceive, error) {
-
-	return subClient.SubscribeToEventsStore(context.Background(), channel, group, errCh, kubemq.StartFromFirstEvent())
-
-}
-
 func runSubscriber(client *kubemq.Client, channelName string, group string, startwg, donewg *sync.WaitGroup, numMsgs int, msgSize int, pattern string) {
 
 	received := 0
-	errCH := make(chan error)
-	ch := make(chan time.Time, 2)
+	errCh := make(chan error)
+	//ch := make(chan time.Time, 2)
 	mmperc := numMsgs / 10
+	var finish sync.WaitGroup
+	finish.Add(1)
+	start := time.Now()
+	//events and event stream
+	if pattern == "e" || pattern == "est" {
+		eventCh, err := client.SubscribeToEvents(context.Background(), channelName, group, errCh)
 
-	if pattern == "e" {
-		eventCh, err := innerSubscribeToEvents(channelName, group, errCH, client)
 		if err != nil {
 			fmt.Printf("Error innerSubscribeToEvents , %v", err)
 		}
 		go func() {
 			for {
 				select {
-				case err := <-errCH:
+				case err := <-errCh:
 					fmt.Printf("Error lastMessages %d, %v", received, err)
 				case <-eventCh:
 					received++
-					if received%mmperc == 0 {
-						fmt.Printf("perc %d\r", received/mmperc*10)
+					if received == numMsgs {
+						finish.Done()
 					}
-					if received > numMsgs-5 {
-						fmt.Printf("lastMessages %d\r", received)
-					}
-					if received == 1 {
-						ch <- time.Now()
-					}
-					if received >= numMsgs {
-						ch <- time.Now()
+					go logAndChanel(received, mmperc, numMsgs)
+					// if logAndChanel(received, mmperc, numMsgs) {
+					// 	ch <- time.Now()
+					// }
 
-					}
 				}
 			}
 		}()
 	}
 
-	if pattern == "es" {
-		eventSCh, err := innerSubscribeToEventsStore(channelName, group, errCH, client)
+	//eventsStore and event stream Store
+	if pattern == "es" || pattern == "esst" {
+		eventSCh, err := client.SubscribeToEventsStore(context.Background(), channelName, group, errCh, kubemq.StartFromNewEvents())
 
 		if err != nil {
 			fmt.Printf("Error innerSubscribeToEventsStore , %v", err)
@@ -234,39 +258,34 @@ func runSubscriber(client *kubemq.Client, channelName string, group string, star
 		go func() {
 			for {
 				select {
-				case err := <-errCH:
+				case err := <-errCh:
 					fmt.Printf("Errir lastMessages %d, %v", received, err)
 				case <-eventSCh:
 					received++
-					if received%mmperc == 0 {
-						fmt.Printf("perc %d\r", received/mmperc*10)
-					}
-					if received > numMsgs-5 {
-						fmt.Printf("lastMessages %d\r", received)
-					}
-					if received == 1 {
-						ch <- time.Now()
-					}
-					if received >= numMsgs {
-						ch <- time.Now()
-					}
 
+					if logAndChanel(received, mmperc, numMsgs) {
+						//ch <- time.Now()
+					}
+					if received == numMsgs {
+						finish.Done()
+					}
 				}
 			}
 		}()
 	}
 
 	startwg.Done()
-	start := <-ch
-	end := <-ch
-	//fmt.Printf("done!!!!!!!!!!!!!!")
+	finish.Wait()
+
+	//start := <-ch
+	end := time.Now()
 	benchmark.AddSubSample(bench.NewSample(numMsgs, msgSize, start, end))
 	donewg.Done()
 
 }
 
 //Receive address and split it
-func getPort(a string) (server string, port int, err error) {
+func splitServerCred(a string) (server string, port int, err error) {
 	fullAddress := strings.Split(a, ":")
 	if len(fullAddress) != 2 {
 		err = errors.New("Please make sure the format of the server name is {serverName}:{port} , localhost:50000")
@@ -279,11 +298,34 @@ func getPort(a string) (server string, port int, err error) {
 	}
 	return server, port, err
 }
-func getClient(serverAdd string, serverPort int, name string) (*kubemq.Client, error) {
+
+func randomString(len int) string {
+	bytes := make([]byte, len)
+	for i := 0; i < len; i++ {
+		bytes[i] = byte(65 + rand.Intn(25)) //A=65 and Z = 65+25
+	}
+	return string(bytes)
+}
+
+func createKubmeMQClient(serverAdd string, serverPort int, name string) (*kubemq.Client, error) {
 
 	client, err := kubemq.NewClient(context.Background(),
 		kubemq.WithAddress(serverAdd, serverPort),
 		kubemq.WithClientId(name),
 		kubemq.WithTransportType(kubemq.TransportTypeGRPC))
 	return client, err
+}
+func logAndChanel(counter int, perc int, numMsgs int) bool {
+	if counter%perc == 0 {
+		fmt.Printf("perc %d\r", counter/perc*10)
+	}
+	if counter > numMsgs-5 {
+		fmt.Printf("lastMessages %d\r", counter)
+	}
+	if counter == 1 || counter >= numMsgs {
+		return true
+	}
+
+	return false
+
 }
