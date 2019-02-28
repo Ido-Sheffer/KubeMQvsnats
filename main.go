@@ -126,7 +126,6 @@ func runPublisher(client *kubemq.Client, channel string, startwg, donewg *sync.W
 	if msgSize > 0 {
 		body = randomString(msgSize)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 
 	var goSend sync.WaitGroup
 	goSend.Add(numMsgs)
