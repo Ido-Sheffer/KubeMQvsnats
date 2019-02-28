@@ -51,7 +51,7 @@ func main() {
 	var numMsgs = flag.Int("n", DefaultNumMsgs, "Number of Messages to Publish")
 	var msgSize = flag.Int("ms", DefaultMessageSize, "Size of the message.")
 	var csvFile = flag.String("csv", "", "Save bench data to csv file.")
-	var channelName = flag.String("ch", DefaultChannelName, "pubsub channel name")
+	var channelName = flag.String("ch", DefaultChannelName+strconv.FormatInt(time.Now().Unix(), 10), "pubsub channel name")
 	var clientName = flag.String("client", DefaultClientName+strconv.FormatInt(time.Now().Unix(), 10), "client name")
 	var testpattern = flag.String("type", DefaulType, "e = pubsub, es = pubsub presistnace")
 
@@ -126,6 +126,7 @@ func runPublisher(client *kubemq.Client, channel string, startwg, donewg *sync.W
 	if msgSize > 0 {
 		body = randomString(msgSize)
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 
 	var goSend sync.WaitGroup
 	goSend.Add(numMsgs)
