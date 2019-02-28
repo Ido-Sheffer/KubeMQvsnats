@@ -35,14 +35,14 @@ import (
 
 // Some sane defaults
 const (
-	DefaultNumMsgs     = 5
+	DefaultNumMsgs     = 10000
 	DefaultNumPubs     = 1
-	DefaultNumSubs     = 0
+	DefaultNumSubs     = 1
 	DefaultMessageSize = 128
 	DefaultChannelName = "ido"
 	DefaultKubeAddres  = "localhost:50000"
 	DefaultClientName  = "newClient"
-	DefaulType         = "es"
+	DefaulType         = "e"
 )
 
 var benchmark *bench.Benchmark
