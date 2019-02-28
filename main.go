@@ -21,9 +21,12 @@ import (
 	"io/ioutil"
 	"log"
 	"math/rand"
+	"os"
+	"os/signal"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"bitbucket.org/tradency_team/KubeVSnast/KubeMQvsnats/bench"
@@ -32,14 +35,14 @@ import (
 
 // Some sane defaults
 const (
-	DefaultNumMsgs     = 100
+	DefaultNumMsgs     = 5
 	DefaultNumPubs     = 1
-	DefaultNumSubs     = 1
+	DefaultNumSubs     = 0
 	DefaultMessageSize = 128
 	DefaultChannelName = "ido"
 	DefaultKubeAddres  = "localhost:50000"
 	DefaultClientName  = "newClient"
-	DefaulType         = "e"
+	DefaulType         = "es"
 )
 
 var benchmark *bench.Benchmark
@@ -104,7 +107,20 @@ func main() {
 	startwg.Wait()
 	donewg.Wait()
 	if *numSubs == 0 {
-		time.Sleep(60 * time.Second)
+
+		sigs := make(chan os.Signal, 1)
+		signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+		done := make(chan bool, 1)
+		go func() {
+			for {
+				select {
+				case <-sigs:
+					close(done)
+					return
+				}
+			}
+		}()
+		<-done
 	}
 
 	benchmark.Close()
@@ -223,7 +239,6 @@ func runPublisher(client *kubemq.Client, channel string, startwg, donewg *sync.W
 	}
 	go func() {
 		goSend.Wait()
-		fmt.Printf("\n!!!!!!!!!!FinishWait!!!!!!!!!!!\n")
 		benchmark.AddPubSample(bench.NewSample(numMsgs, msgSize, start, time.Now()))
 
 		donewg.Done()
@@ -259,7 +274,6 @@ func runSubscriber(client *kubemq.Client, channelName string, group string, star
 	counter := 0
 	errCh := make(chan error)
 	ch := make(chan time.Time, 2)
-	mmperc := numMsgs / 10
 
 	//events and event stream
 	if pattern == "e" || pattern == "est" {
@@ -274,18 +288,8 @@ func runSubscriber(client *kubemq.Client, channelName string, group string, star
 				case err := <-errCh:
 					fmt.Printf("Error lastMessages  %v", err)
 				case <-eventCh:
-
-					if counter == 0 || counter == numMsgs-1 {
-						ch <- time.Now()
-					}
 					counter++
-					if (counter % mmperc) == 0 {
-						fmt.Printf("perc %d\r", counter/mmperc*10)
-
-					}
-					if counter > numMsgs-10 {
-						fmt.Printf("lastMessages %d\r", counter)
-					}
+					handleEcentCh(counter, numMsgs, ch)
 
 				}
 			}
@@ -304,22 +308,11 @@ func runSubscriber(client *kubemq.Client, channelName string, group string, star
 				select {
 				case err := <-errCh:
 					fmt.Printf("Error lastMessages  %v", err)
+					ch <- time.Now()
+					return
 				case <-eventSCh:
-
-					if counter == 0 || counter == numMsgs-1 {
-						ch <- time.Now()
-					}
-
 					counter++
-
-					if (counter % mmperc) == 0 {
-						fmt.Printf("perc %d\r", counter/mmperc*10)
-
-					}
-					if counter > numMsgs-10 {
-						fmt.Printf("lastMessages %d\r", counter)
-					}
-
+					handleEcentCh(counter, numMsgs, ch)
 				}
 			}
 		}()
@@ -332,6 +325,16 @@ func runSubscriber(client *kubemq.Client, channelName string, group string, star
 	benchmark.AddSubSample(bench.NewSample(numMsgs, msgSize, start, end))
 
 	donewg.Done()
+
+}
+
+func handleEcentCh(counter int, numMsgs int, ch chan time.Time) {
+
+	if counter == 1 || counter >= numMsgs {
+		ch <- time.Now()
+	}
+
+	fmt.Printf("perc %.f Messages %d\r", (float32(counter) / float32(numMsgs) * 100), counter)
 
 }
 
