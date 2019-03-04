@@ -29,13 +29,15 @@ import (
 	"syscall"
 	"time"
 
-	"bitbucket.org/tradency_team/KubeVSnast/KubeMQvsnats/bench"
+	"github.com/Ido-Sheffer/KubeMQvsnats/bench"
+	mygrpc "github.com/Ido-Sheffer/KubeMQvsnats/grpc"
+	pb "github.com/Ido-Sheffer/KubeMQvsnats/grpc/pkg/pb"
 	kubemq "github.com/kubemq-io/kubemq-go"
 )
 
 // Some sane defaults
 const (
-	DefaultNumMsgs     = 10000
+	DefaultNumMsgs     = 1
 	DefaultNumPubs     = 1
 	DefaultNumSubs     = 1
 	DefaultMessageSize = 128
@@ -80,18 +82,25 @@ func main() {
 		return
 	}
 
+	mygrpc.RunServer("5000")
 	client, err := kubemq.NewClient(context.Background(),
 		kubemq.WithAddress(address, port),
 		kubemq.WithClientId(*clientName),
 		kubemq.WithTransportType(kubemq.TransportTypeGRPC))
+
+	for i := 0; i < *numSubs; i++ {
+		go runSubscriberGRPC(*channelName, "", &startwg, &donewg, *numMsgs, *msgSize, *testpattern)
+	}
+
 	if err != nil {
 		log.Printf(err.Error())
 		return
 	}
 
-	for i := 0; i < *numSubs; i++ {
-		go runSubscriber(client, *channelName, "", &startwg, &donewg, *numMsgs, *msgSize, *testpattern)
-	}
+	// for i := 0; i < *numSubs; i++ {
+	// 	go runSubscriber(client, *channelName, "", &startwg, &donewg, *numMsgs, *msgSize, *testpattern)
+	// }
+
 	startwg.Wait()
 
 	// Now Publishers
@@ -99,7 +108,7 @@ func main() {
 	pubCounts := bench.MsgsPerClient(*numMsgs, *numPubs)
 	for i := 0; i < *numPubs; i++ {
 
-		go runPublisher(client, *channelName, &startwg, &donewg, pubCounts[i], *msgSize, *testpattern, *clientName)
+		go runPublisherGRPC(client, *channelName, &startwg, &donewg, pubCounts[i], *msgSize, *testpattern, *clientName)
 	}
 
 	log.Printf("Starting benchmark [msgs=%d, msgsize=%d, pubs=%d, subs=%d testpattern=%s channel=%s client=%s]\n", *numMsgs, *msgSize, *numPubs, *numSubs, *testpattern, *channelName, *clientName)
@@ -245,6 +254,92 @@ func runPublisher(client *kubemq.Client, channel string, startwg, donewg *sync.W
 	}()
 }
 
+func runPublisherGRPC(client *kubemq.Client, channel string, startwg, donewg *sync.WaitGroup, numMsgs int, msgSize int, pattern string, clientName string) {
+
+	c := mygrpc.RunClient("localhost:5000")
+
+	startwg.Done()
+	var body string
+	if msgSize > 0 {
+		body = randomString(msgSize)
+	}
+
+	var goSend sync.WaitGroup
+	goSend.Add(numMsgs)
+	start := time.Now()
+	//Event KubeMQ inmemory
+	if pattern == "e" {
+		for i := 0; i < numMsgs; i++ {
+
+			go func(i int) {
+				defer goSend.Done()
+
+				evid := clientName + strconv.Itoa(i)
+				msg := []byte(body)
+				result, err := c.SendEvent(context.Background(), &pb.Event{
+					EventID:  evid,
+					ClientID: clientName,
+					Channel:  channel,
+					Metadata: strconv.Itoa(i),
+					Body:     msg,
+					Store:    false,
+				})
+				if err != nil {
+					fmt.Printf("Error innerSubscribeToEvents , %v", err)
+					return
+				}
+				if !result.Sent {
+					fmt.Printf("Error innerSubscribeToEvents , %v", result.Error)
+					return
+				}
+
+				if err != nil {
+					fmt.Printf("Error innerSubscribeToEvents , %v", err)
+					return
+				}
+
+			}(i)
+		}
+	}
+	//EventStore KubeMQ persistence
+	// if pattern == "es" {
+	// 	for i := 0; i < numMsgs; i++ {
+	// 		go func(i int) {
+	// 			defer goSend.Done()
+
+	// 			evid := clientName + strconv.Itoa(i)
+	// 			msg := []byte(body)
+	// 			result, err := c.SendEventsStream(context.Background(), &pb.Event{
+	// 				EventID:  evid,
+	// 				ClientID: clientName,
+	// 				Channel:  channel,
+	// 				Metadata: strconv.Itoa(i),
+	// 				Body:     msg,
+	// 			})
+	// 			if err != nil {
+	// 				fmt.Printf("Error innerSubscribeToEvents , %v", err)
+	// 			}
+	// 			if !result.Sent {
+	// 				fmt.Printf("Error innerSubscribeToEvents , %v", result.Error)
+	// 			}
+
+	// 			if err != nil {
+	// 				fmt.Printf("Error innerSubscribeToEvents , %v", err)
+	// 			}
+
+	// 		}(i)
+
+	// 	}
+	// }
+
+	go func() {
+		goSend.Wait()
+		benchmark.AddPubSample(bench.NewSample(numMsgs, msgSize, start, time.Now()))
+
+		donewg.Done()
+	}()
+}
+
 // type counter struct {
 // 	value int64
 // }
@@ -317,6 +412,42 @@ func runSubscriber(client *kubemq.Client, channelName string, group string, star
 			}
 		}()
 	}
+
+	startwg.Done()
+	start := <-ch
+	end := <-ch
+
+	benchmark.AddSubSample(bench.NewSample(numMsgs, msgSize, start, end))
+
+	donewg.Done()
+
+}
+
+func runSubscriberGRPC(channelName string, group string, startwg, donewg *sync.WaitGroup, numMsgs int, msgSize int, pattern string) {
+
+	errCh := make(chan error)
+	ch := make(chan time.Time, 2)
+
+	// //events and event stream
+	// if pattern == "e" || pattern == "est" {
+	// 	eventCh, err := client.SubscribeToEvents(context.Background(), channelName, group, errCh)
+	// 	if err != nil {
+	// 		fmt.Printf("Error innerSubscribeToEvents , %v", err)
+	// 	}
+
+	// 	go func() {
+	// 		for {
+	// 			select {
+	// 			case err := <-errCh:
+	// 				fmt.Printf("Error lastMessages  %v", err)
+	// 			case <-eventCh:
+	// 				counter++
+	// 				handleEcentCh(counter, numMsgs, ch)
+
+	// 			}
+	// 		}
+	// 	}()
+	// }
 
 	startwg.Done()
 	start := <-ch
