@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"time"
 
 	pb "github.com/Ido-Sheffer/KubeMQvsnats/grpc/pkg/pb"
 
@@ -13,52 +12,50 @@ import (
 )
 
 type server struct {
-	errCh  chan error
-	ch     chan time.Time
-	numMsg int
+	msgCh chan *pb.EventReceive
 }
 
 func (s *server) SubscribeToEvents(subReq *pb.Subscribe, stream pb.Kubemq_SubscribeToEventsServer) (err error) {
-
+	fmt.Print("SubscribeToEvents")
 	errCh := make(chan error, 10)
-	msgCh := make(chan *pb.EventReceive, 1024)
+	s.msgCh = make(chan *pb.EventReceive, 100)
 	ctx, _ := context.WithCancel(stream.Context())
-	counter := 0
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-msgCh:
+		case msg := <-s.msgCh:
+			if err = stream.Send(msg); err != nil {
+				fmt.Printf("SubscribeToEvents v%", err.Error())
+				return
+			}
 			//s.stats.receivedEvents.Inc()
-			counter++
-			handleEcentCh(counter, s.numMsg, s.ch)
 
 		case <-errCh:
-			s.errCh <- err
+
 			return nil
 		}
 	}
 }
 
-func handleEcentCh(counter int, numMsgs int, ch chan time.Time) {
-
-	if counter == 1 || counter >= numMsgs {
-		ch <- time.Now()
-	}
-
-	fmt.Printf("perc %.f Messages %d\r", (float32(counter) / float32(numMsgs) * 100), counter)
-
-}
-
 func (s *server) SendEvent(ctx context.Context, msg *pb.Event) (*pb.Result, error) {
-
+	//fmt.Print("SubscribeToEvents")
 	result := &pb.Result{
 		EventID: msg.EventID,
 		Sent:    true,
 		Error:   "",
 	}
+	s.msgCh <- &pb.EventReceive{
+		EventID:   msg.EventID,
+		Channel:   msg.Channel,
+		Metadata:  msg.Metadata,
+		Body:      msg.Body,
+		Timestamp: 123,
+		Sequence:  1,
+	}
 	return result, nil
+
 }
 
 func (s *server) SendEventsStream(stream pb.Kubemq_SendEventsStreamServer) error {
@@ -81,12 +78,6 @@ func (s *server) SendResponse(ctx context.Context, res *pb.Response) (empty *pb.
 
 func (s *server) SubscribeToRequests(subReq *pb.Subscribe, stream pb.Kubemq_SubscribeToRequestsServer) error {
 	return fmt.Errorf("error")
-}
-
-func (s *server) setValues(ch chan time.Time, errCh chan error, numnsg int) {
-	s.numMsg = numnsg
-	s.errCh = errCh
-	s.ch = ch
 }
 
 func RunServer(port string) {
