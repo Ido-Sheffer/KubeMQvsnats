@@ -27,7 +27,7 @@ func (s *server) SubscribeToEvents(subReq *pb.Subscribe, stream pb.Kubemq_Subscr
 			return
 		case msg := <-s.msgCh:
 			if err = stream.Send(msg); err != nil {
-				fmt.Printf("SubscribeToEvents v%", err.Error())
+				fmt.Printf("SubscribeToEvents %s", err.Error())
 				return
 			}
 			//s.stats.receivedEvents.Inc()
@@ -80,12 +80,12 @@ func (s *server) SubscribeToRequests(subReq *pb.Subscribe, stream pb.Kubemq_Subs
 	return fmt.Errorf("error")
 }
 
-func RunServer(port string) {
+func RunServer(port string) error {
 
 	lis, err := net.Listen("tcp", ":"+port)
 	if err != nil {
 		fmt.Printf("error %v", err)
-		return
+		return err
 	}
 
 	s := grpc.NewServer()
@@ -99,15 +99,17 @@ func RunServer(port string) {
 
 	}()
 
+	return nil
 }
 
-func RunClient(address string) pb.KubemqClient {
+func RunClient(address string) (pb.KubemqClient, error) {
 
 	conn, err := grpc.Dial(address, grpc.WithInsecure())
 	if err != nil {
 		log.Fatalf("did not connect: %v", err)
+		return nil, err
 	}
 
-	return pb.NewKubemqClient(conn)
+	return pb.NewKubemqClient(conn), nil
 
 }
