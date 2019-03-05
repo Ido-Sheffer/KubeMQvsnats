@@ -16,7 +16,6 @@ type server struct {
 }
 
 func (s *server) SubscribeToEvents(subReq *pb.Subscribe, stream pb.Kubemq_SubscribeToEventsServer) (err error) {
-	fmt.Print("SubscribeToEvents")
 	errCh := make(chan error, 10)
 	s.msgCh = make(chan *pb.EventReceive, 100)
 	ctx, _ := context.WithCancel(stream.Context())
@@ -94,7 +93,7 @@ func RunServer(port string) error {
 
 	go func() {
 		if err := s.Serve(lis); err != nil {
-			fmt.Printf("error %v", err)
+			fmt.Printf("error %s", err.Error())
 		}
 
 	}()
@@ -106,7 +105,7 @@ func RunClient(address string) (pb.KubemqClient, error) {
 
 	conn, err := grpc.Dial(address, grpc.WithInsecure())
 	if err != nil {
-		log.Fatalf("did not connect: %v", err)
+		log.Fatalf("did not connect: %s", err.Error())
 		return nil, err
 	}
 

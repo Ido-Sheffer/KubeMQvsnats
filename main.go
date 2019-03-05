@@ -37,7 +37,7 @@ import (
 
 // Some sane defaults
 const (
-	DefaultNumMsgs     = 1000
+	DefaultNumMsgs     = 10000
 	DefaultNumPubs     = 1
 	DefaultNumSubs     = 1
 	DefaultMessageSize = 128
@@ -91,7 +91,13 @@ func main() {
 	if *testpattern == "grpc" {
 
 		if (*numPubs == 0 && *numPubs == 0) || (*numPubs >= 1 && *numPubs >= 1) {
-			err := grpcKubeMQEmu.RunServer("5000")
+
+			_, port, err := splitServerCred(*kubeaAddress)
+			if err != nil {
+				log.Printf(err.Error())
+				return
+			}
+			err = grpcKubeMQEmu.RunServer(strconv.Itoa(port))
 			if err != nil {
 				log.Printf("grpcKubeMQEmu.RunServer %s", err.Error())
 				return
@@ -281,33 +287,29 @@ func runPublisherGRPC(client pb.KubemqClient, channel string, startwg, donewg *s
 	goSend.Add(numMsgs)
 	start := time.Now()
 	//Event KubeMQ inmemory
-	if pattern == "e" {
-		for i := 0; i < numMsgs; i++ {
+	for i := 0; i < numMsgs; i++ {
 
-			go func(i int) {
-				defer goSend.Done()
+		go func(i int) {
+			defer goSend.Done()
 
-				evid := clientName + strconv.Itoa(i)
-				msg := []byte(body)
-				result, err := client.SendEvent(context.Background(), &pb.Event{
-					EventID:  evid,
-					ClientID: clientName,
-					Channel:  channel,
-					Metadata: strconv.Itoa(i),
-					Body:     msg,
-					Store:    false,
-				})
-				if err != nil {
-					fmt.Printf("Error runPublisherGRPC  SendEvent, %s", err.Error())
-					return
-				}
-				if !result.Sent {
-					fmt.Printf("Error runPublisherGRPC  SendEvent, %s", err.Error())
-					return
-				}
+			result, err := client.SendEvent(context.Background(), &pb.Event{
+				EventID:  clientName + strconv.Itoa(i),
+				ClientID: clientName,
+				Channel:  channel,
+				Metadata: strconv.Itoa(i),
+				Body:     []byte(body),
+				Store:    false,
+			})
+			if err != nil {
+				fmt.Printf("Error runPublisherGRPC  SendEvent, %s", err.Error())
+				return
+			}
+			if !result.Sent {
+				fmt.Printf("Error runPublisherGRPC  SendEvent, %s", err.Error())
+				return
+			}
 
-			}(i)
-		}
+		}(i)
 	}
 
 	goSend.Wait()
@@ -365,7 +367,7 @@ func runSubscriber(client *kubemq.Client, channelName string, group string, star
 			}
 		}()
 	}
-
+	time.Sleep(5 * time.Second)
 	startwg.Done()
 	start := <-ch
 	end := <-ch
@@ -405,7 +407,7 @@ func runSubscriberGRPC(client pb.KubemqClient, clientName string, channelName st
 
 		}
 	}()
-
+	time.Sleep(5 * time.Second)
 	startwg.Done()
 	start := <-ch
 	end := <-ch
