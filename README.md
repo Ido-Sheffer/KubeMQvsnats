@@ -3,8 +3,27 @@ A benchmark test forked from go-nats(https://github.com/nats-io/go-nats/tree/mas
 
 ## Use cases
 KubeMQvsnats can be runned in 2 main options:
-* [KubeMQ] benchmark pub sub patterens on a KubeMQ server 
+* [KubeMQ] benchmark pub sub patterens using GRPC to KubeMQ server 
 * [grpc] using identical proto of kubemq will becnhmark pub sub messages on local grpc server
+
+### grpc example
+Running Grpc server +pub +sub
+```
+KubeMQvsnats.exe -grpc 
+```
+Running Grpc server only
+```
+KubeMQvsnats.exe -grpc -np 0 -ns =0
+```
+### KubeMQ example
+* make sure KubeMQ is running. (default address for grpc on KubeMQ is localhost:5000)
+```
+KubeMQvsnats.exe  
+```
+Running presistance
+```
+KubeMQvsnats.exe  -type est
+```
 
 KubeMQvsnats running varialbes 
 * [s]  The KubeMQ or grpc server address (separated by comma)")
@@ -18,18 +37,8 @@ KubeMQvsnats running varialbes
 * [type] benchamrk running mode:
   * [grpc]->event with emulated server
   * [e]	->pub sub event
-  * [es]	->pubsub event with stream sender
-  * [est]	->pub sub event with presistance
-  * [esst]	->pub sub event with stream sender with presistance
+  * [es] ->pubsub event with stream sender
+  * [est] ->pub sub event with presistance
+  * [esst] ->pub sub event with stream sender with presistance
 	
-### grpc example
-running with the default values of tester (	DefaultNumMsgs     = 10000,	
-                                            DefaultNumPubs     = 1,	
-                                            DefaultNumSubs     = 1,	
-                                            DefaultMessageSize = 128,	
-                                            DefaultChannelName = "ido",	
-                                            DefaultKubeAddres  = "localhost:50000",	
-                                            DefaultClientName  = "newClient"
-```
-KubeMQvsnats.exe -grpc 
-```
+
