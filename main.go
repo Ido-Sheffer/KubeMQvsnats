@@ -42,7 +42,7 @@ const (
 	DefaultNumSubs     = 1
 	DefaultMessageSize = 128
 	DefaultChannelName = "ido"
-	DefaultKubeAddres  = "localhost:50000"
+	DefaultKubeAddres  = "localhost:50001"
 	DefaultClientName  = "newClient"
 	DefaulType         = "e"
 )
@@ -67,6 +67,8 @@ func main() {
 		log.Fatal("Number of messages should be greater than zero.")
 	}
 
+	//TODO validate testpattern
+
 	benchmark = bench.NewBenchmark("KubeMQ", *numSubs, *numPubs)
 
 	var startwg sync.WaitGroup
@@ -77,9 +79,9 @@ func main() {
 	// Run Subscribers first
 	startwg.Add(*numSubs)
 
-	//Temp clietn
-
-	/*patterens can be: grpc->event with emulated server
+	/*patterens can be:
+	grpc->event with emulated server
+	grpcst->event stream with emulated server
 	e	->pub sub event
 	es	->pubsub event with stream sender
 	est	->pub sub event with presistance
@@ -88,7 +90,7 @@ func main() {
 
 	//run GRPC server
 
-	if *testpattern == "grpc" {
+	if *testpattern == "grpc" || *testpattern == "grpcst" {
 
 		if (*numPubs == 0 && *numPubs == 0) || (*numPubs >= 1 && *numPubs >= 1) {
 
@@ -113,8 +115,8 @@ func main() {
 	}
 
 	for i := 0; i < *numSubs; i++ {
-		if *testpattern == "grpc" {
-			go runSubscriberGRPC(grpcclient, *clientName, *channelName, &startwg, &donewg, *numMsgs, *msgSize)
+		if *testpattern == "grpc" || *testpattern == "grpcst" {
+			go runSubscriberGRPC(grpcclient, *channelName, *clientName, &startwg, &donewg, *numMsgs, *msgSize)
 		} else {
 			go runSubscriber(client, *channelName, "", &startwg, &donewg, *numMsgs, *msgSize, *testpattern)
 		}
@@ -125,10 +127,11 @@ func main() {
 	startwg.Add(*numPubs)
 	pubCounts := bench.MsgsPerClient(*numMsgs, *numPubs)
 	for i := 0; i < *numPubs; i++ {
-		if *testpattern == "grpc" {
-			go runPublisherGRPC(grpcclient, *channelName, &startwg, &donewg, pubCounts[i], *msgSize, *testpattern, *clientName)
+		if *testpattern == "grpc" || *testpattern == "grpcst" {
+
+			go runPublisherGRPC(grpcclient, *channelName, *clientName, &startwg, &donewg, pubCounts[i], *msgSize, *testpattern)
 		} else {
-			go runPublisher(client, *channelName, &startwg, &donewg, pubCounts[i], *msgSize, *testpattern, *clientName)
+			go runPublisher(client, *channelName, *clientName, &startwg, &donewg, pubCounts[i], *msgSize, *testpattern)
 		}
 	}
 
@@ -163,9 +166,10 @@ func main() {
 		ioutil.WriteFile(*csvFile, []byte(csv), 0644)
 		fmt.Printf("Saved metric data in csv file %s\n", *csvFile)
 	}
+
 }
 
-func runPublisher(client *kubemq.Client, channel string, startwg, donewg *sync.WaitGroup, numMsgs int, msgSize int, pattern string, clientName string) {
+func runPublisher(client *kubemq.Client, channel string, clientName string, startwg, donewg *sync.WaitGroup, numMsgs int, msgSize int, pattern string) {
 
 	startwg.Done()
 	var body string
@@ -275,7 +279,70 @@ func runPublisher(client *kubemq.Client, channel string, startwg, donewg *sync.W
 	}()
 }
 
-func runPublisherGRPC(client pb.KubemqClient, channel string, startwg, donewg *sync.WaitGroup, numMsgs int, msgSize int, pattern string, clientName string) {
+func runSubscriber(client *kubemq.Client, channel string, group string, startwg, donewg *sync.WaitGroup, numMsgs int, msgSize int, pattern string) {
+
+	counter := 0
+	errCh := make(chan error)
+	ch := make(chan time.Time, 2)
+
+	//events and event stream
+	if pattern == "e" || pattern == "est" {
+		eventCh, err := client.SubscribeToEvents(context.Background(), channel, group, errCh)
+		if err != nil {
+			fmt.Printf("Error SubscribeToEvents , %s", err.Error())
+		}
+
+		go func(counter int, numMsgs int, ch chan time.Time) {
+			for {
+				select {
+				case err := <-errCh:
+					fmt.Printf("Error lastMessages  %s", err.Error())
+				case <-eventCh:
+					counter++
+					if handleCounterAndStop(counter, numMsgs, ch) {
+						return
+					}
+
+				}
+			}
+		}(counter, numMsgs, ch)
+	}
+
+	//eventsStore and event stream Store
+	if pattern == "es" || pattern == "esst" {
+		eventSCh, err := client.SubscribeToEventsStore(context.Background(), channel, group, errCh, kubemq.StartFromNewEvents())
+
+		if err != nil {
+			fmt.Printf("Error SubscribeToEventsStore , %s", err.Error())
+		}
+		go func(counter int, numMsgs int, ch chan time.Time) {
+			for {
+				select {
+				case err := <-errCh:
+					fmt.Printf("Error lastMessages  %s", err.Error())
+					ch <- time.Now()
+					return
+				case <-eventSCh:
+					counter++
+					if handleCounterAndStop(counter, numMsgs, ch) {
+						return
+					}
+				}
+			}
+		}(counter, numMsgs, ch)
+	}
+	time.Sleep(5 * time.Second)
+	startwg.Done()
+	start := <-ch
+	end := <-ch
+
+	benchmark.AddSubSample(bench.NewSample(numMsgs, msgSize, start, end))
+
+	donewg.Done()
+
+}
+
+func runPublisherGRPC(client pb.KubemqClient, channel string, clientName string, startwg, donewg *sync.WaitGroup, numMsgs int, msgSize int, pattern string) {
 
 	startwg.Done()
 	var body string
@@ -286,99 +353,87 @@ func runPublisherGRPC(client pb.KubemqClient, channel string, startwg, donewg *s
 	var goSend sync.WaitGroup
 	goSend.Add(numMsgs)
 	start := time.Now()
+
 	//Event KubeMQ inmemory
-	for i := 0; i < numMsgs; i++ {
+	if pattern == "grpc" {
 
-		go func(i int) {
-			defer goSend.Done()
+		for i := 0; i < numMsgs; i++ {
 
-			result, err := client.SendEvent(context.Background(), &pb.Event{
-				EventID:  clientName + strconv.Itoa(i),
-				ClientID: clientName,
-				Channel:  channel,
-				Metadata: strconv.Itoa(i),
-				Body:     []byte(body),
-				Store:    false,
-			})
-			if err != nil {
-				fmt.Printf("Error runPublisherGRPC  SendEvent, %s", err.Error())
-				return
+			go func(i int) {
+				defer goSend.Done()
+
+				result, err := client.SendEvent(context.Background(), &pb.Event{
+					EventID:  clientName + strconv.Itoa(i),
+					ClientID: clientName,
+					Channel:  channel,
+					Metadata: strconv.Itoa(i),
+					Body:     []byte(body),
+					Store:    false,
+				})
+				if err != nil {
+					fmt.Printf("Error runPublisherGRPC  SendEvent, %s", err.Error())
+					return
+				}
+				if !result.Sent {
+					fmt.Printf("Error runPublisherGRPC  SendEvent, %s", err.Error())
+					return
+				}
+
+			}(i)
+		}
+	}
+	if pattern == "grpcst" {
+		streamCtx, _ := context.WithCancel(context.Background())
+		//defer cancel()
+		stream, err := client.SendEventsStream(streamCtx)
+		if err != nil {
+			fmt.Printf("Error runPublisherGRPC  SendEvent, %s", err.Error())
+			return
+		}
+		//defer stream.CloseSend()
+		go func() {
+			for {
+
+				result, err := stream.Recv()
+				if err != nil {
+					fmt.Printf("Error runPublisherGRPC  SendEvent, %s", err.Error())
+				}
+				if !result.Sent {
+					fmt.Printf(result.Error)
+				}
+				goSend.Done()
+
 			}
-			if !result.Sent {
-				fmt.Printf("Error runPublisherGRPC  SendEvent, %s", err.Error())
-				return
-			}
+		}()
 
-		}(i)
+		go func() {
+			for i := 0; i < numMsgs; i++ {
+
+				err := stream.Send(&pb.Event{
+					EventID:  clientName + strconv.Itoa(i),
+					ClientID: clientName,
+					Channel:  channel,
+					Metadata: strconv.Itoa(i),
+					Body:     []byte(body),
+					Store:    false,
+				})
+				if err != nil {
+					fmt.Printf("Error runPublisherGRPC  SendEvent, %s", err.Error())
+				}
+			}
+		}()
+
 	}
 
 	goSend.Wait()
+
 	benchmark.AddPubSample(bench.NewSample(numMsgs, msgSize, start, time.Now()))
 
 	donewg.Done()
 
 }
 
-func runSubscriber(client *kubemq.Client, channelName string, group string, startwg, donewg *sync.WaitGroup, numMsgs int, msgSize int, pattern string) {
-
-	counter := 0
-	errCh := make(chan error)
-	ch := make(chan time.Time, 2)
-
-	//events and event stream
-	if pattern == "e" || pattern == "est" {
-		eventCh, err := client.SubscribeToEvents(context.Background(), channelName, group, errCh)
-		if err != nil {
-			fmt.Printf("Error SubscribeToEvents , %s", err.Error())
-		}
-
-		go func() {
-			for {
-				select {
-				case err := <-errCh:
-					fmt.Printf("Error lastMessages  %s", err.Error())
-				case <-eventCh:
-					counter++
-					handleEcentCh(counter, numMsgs, ch)
-
-				}
-			}
-		}()
-	}
-
-	//eventsStore and event stream Store
-	if pattern == "es" || pattern == "esst" {
-		eventSCh, err := client.SubscribeToEventsStore(context.Background(), channelName, group, errCh, kubemq.StartFromNewEvents())
-
-		if err != nil {
-			fmt.Printf("Error SubscribeToEventsStore , %s", err.Error())
-		}
-		go func() {
-			for {
-				select {
-				case err := <-errCh:
-					fmt.Printf("Error lastMessages  %s", err.Error())
-					ch <- time.Now()
-					return
-				case <-eventSCh:
-					counter++
-					handleEcentCh(counter, numMsgs, ch)
-				}
-			}
-		}()
-	}
-	time.Sleep(5 * time.Second)
-	startwg.Done()
-	start := <-ch
-	end := <-ch
-
-	benchmark.AddSubSample(bench.NewSample(numMsgs, msgSize, start, end))
-
-	donewg.Done()
-
-}
-
-func runSubscriberGRPC(client pb.KubemqClient, clientName string, channelName string, startwg, donewg *sync.WaitGroup, numMsgs int, msgSize int) {
+func runSubscriberGRPC(client pb.KubemqClient, channel string, clientName string, startwg, donewg *sync.WaitGroup, numMsgs int, msgSize int) {
 
 	errCh := make(chan error)
 	ch := make(chan time.Time, 2)
@@ -387,13 +442,13 @@ func runSubscriberGRPC(client pb.KubemqClient, clientName string, channelName st
 	subClient, err := client.SubscribeToEvents(context.Background(), &pb.Subscribe{
 		//SubscribeTypeData: &pb.Subscribe_Events, //TODO: not sure how to implement
 		ClientID: clientName,
-		Channel:  channelName,
+		Channel:  channel,
 	})
 	if err != nil {
 		fmt.Printf("runPublisherGRPC SubscribeToEvents , %s", err.Error())
 		return
 	}
-	go func() {
+	go func(counter int, numMsgs int, ch chan time.Time) {
 		for {
 			_, err := subClient.Recv()
 			if err != nil {
@@ -403,10 +458,11 @@ func runSubscriberGRPC(client pb.KubemqClient, clientName string, channelName st
 				return
 			}
 			counter++
-			handleEcentCh(counter, numMsgs, ch)
-
+			if handleCounterAndStop(counter, numMsgs, ch) {
+				return
+			}
 		}
-	}()
+	}(counter, numMsgs, ch)
 	time.Sleep(5 * time.Second)
 	startwg.Done()
 	start := <-ch
@@ -418,14 +474,18 @@ func runSubscriberGRPC(client pb.KubemqClient, clientName string, channelName st
 
 }
 
-func handleEcentCh(counter int, numMsgs int, ch chan time.Time) {
+func handleCounterAndStop(counter int, numMsgs int, ch chan time.Time) bool {
 
-	if counter == 1 || counter >= numMsgs {
+	if counter == 1 {
 		ch <- time.Now()
+		return false
 	}
-
+	if counter >= numMsgs {
+		ch <- time.Now()
+		return true
+	}
 	//	fmt.Printf("perc %.f Messages %d\r", (float32(counter) / float32(numMsgs) * 100), counter)
-
+	return false
 }
 
 //Receive address and split it
@@ -452,7 +512,7 @@ func randomString(len int) string {
 }
 
 func getClient(address string, clientName string, testpattern string) (*kubemq.Client, pb.KubemqClient, error) {
-	if testpattern == "grpc" {
+	if testpattern == "grpc" || testpattern == "grpcst" {
 
 		grpcclient, err := grpcKubeMQEmu.RunClient(address)
 		if err != nil {

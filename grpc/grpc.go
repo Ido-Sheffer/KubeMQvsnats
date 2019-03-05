@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net"
 
@@ -58,6 +59,35 @@ func (s *server) SendEvent(ctx context.Context, msg *pb.Event) (*pb.Result, erro
 }
 
 func (s *server) SendEventsStream(stream pb.Kubemq_SendEventsStreamServer) error {
+
+	for {
+		msg, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			fmt.Printf("error on receive event from stream %s", err.Error())
+			return err
+		}
+		result := &pb.Result{
+			EventID: msg.EventID,
+			Sent:    true,
+			Error:   "",
+		}
+		s.msgCh <- &pb.EventReceive{
+			EventID:   msg.EventID,
+			Channel:   msg.Channel,
+			Metadata:  msg.Metadata,
+			Body:      msg.Body,
+			Timestamp: 123,
+			Sequence:  1,
+		}
+		err = stream.Send(result)
+		if err != nil {
+			fmt.Printf("error on send result %s", err.Error())
+			//	return err
+		}
+	}
 	return nil
 }
 
