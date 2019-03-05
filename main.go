@@ -1,16 +1,3 @@
-// Copyright 2015-2018 The NATS Authors
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 package main
 
 import (
@@ -128,7 +115,6 @@ func main() {
 	pubCounts := bench.MsgsPerClient(*numMsgs, *numPubs)
 	for i := 0; i < *numPubs; i++ {
 		if *testpattern == "grpc" || *testpattern == "grpcst" {
-
 			go runPublisherGRPC(grpcclient, *channelName, *clientName, &startwg, &donewg, pubCounts[i], *msgSize, *testpattern)
 		} else {
 			go runPublisher(client, *channelName, *clientName, &startwg, &donewg, pubCounts[i], *msgSize, *testpattern)
@@ -139,8 +125,10 @@ func main() {
 
 	startwg.Wait()
 	donewg.Wait()
-	if *numSubs == 0 {
 
+	//when only publishing delyied time to publish all go routines
+	if *numSubs == 0 {
+		fmt.Printf("Finished to buplish pres ctrl+C to get results")
 		sigs := make(chan os.Signal, 1)
 		signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 		done := make(chan bool, 1)
