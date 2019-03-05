@@ -35,7 +35,8 @@ KubeMQvsnats running varialbes
 * [ch] pubsub channel name.
 * [client] benchamrk client name
 * [type] benchamrk running mode:
-  * [grpc]->event with emulated server
+  * [grpc]->stream event with emulated server
+  * [grpcst]->event with emulated server
   * [e]	->pub sub event
   * [es] ->pubsub event with stream sender
   * [est] ->pub sub event with presistance
